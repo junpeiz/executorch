@@ -412,10 +412,10 @@ def _prepare_for_llama_export(modelname: str, args) -> LLMEdgeManager:
             transforms.append(replace_sdpa_with_simple_sdpa)
             transforms.append(replace_causal_mask)
 
-        elif args.coreml:
-            if not args.coreml_torch_jit_trace_and_export:
-                transforms.append(replace_sdpa_with_simple_sdpa)
-                transforms.append(replace_causal_mask)
+    if args.coreml:
+        if not args.coreml_torch_jit_trace_and_export:
+            transforms.append(replace_sdpa_with_simple_sdpa)
+            transforms.append(replace_causal_mask)
     return (
         _load_llama_model(
             modelname=modelname,
@@ -461,9 +461,9 @@ def _validate_args(args):
     """
     TODO: Combine all the backends under --backend args
     """
-    if args.enable_dynamic_shape and (args.coreml or args.mps or args.qnn):
+    if args.enable_dynamic_shape and (args.mps or args.qnn):
         raise ValueError(
-            "Dynamic shape is not supported with coreml, MPS or qnn backends."
+            "Dynamic shape is not supported with MPS or qnn backends."
             " Please use --disable_dynamic_shape."
         )
 
