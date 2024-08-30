@@ -115,6 +115,78 @@ class SDPASimple(torch.nn.Module):
         return y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
 
+@torch.library.custom_op("coreml::sdpa", mutates_args=())
+def sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    """Same as F.scaled_dot_product_attention, but with custom op to avoid lowering during dialect conversion."""
+    scale_factor = 1 / math.sqrt(q.size(-1))
+    attn_weight = q @ k.transpose(-2, -1) * scale_factor
+    attn_weight += attn_mask
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+    return attn_weight @ v
+
+
+@torch.library.register_fake("coreml::sdpa")
+def _(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attn_mask: torch.Tensor) -> torch.Tensor:
+    """Fake implementation with the right output shape, which is required for torch.compile/export/fx tracing."""
+    expected_shape = list(q.shape)
+    expected_shape[-1] = v.shape[-1]
+    return torch.ones(expected_shape, dtype=v.dtype)
+
+
+class SDPACoreML(torch.nn.Module):
+    """Similar to SDPASimple, but with coreml custom op to do SDPA calculation."""
+    def __init__(
+        self,
+        kv_cache: KVCache,
+        dim: int,
+        head_dim: int,
+        n_rep: int,
+    ):
+        super().__init__()
+        self.kv_cache = kv_cache
+        self.dim = dim
+        self.head_dim = head_dim
+        self.n_rep = n_rep
+
+    def forward(
+        self,
+        input_pos: torch.Tensor,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        bsz,
+        seqlen,
+        mask,
+    ):
+        q = q.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        k, v = self.kv_cache.update(input_pos, k, v)
+        attn_mask = mask[None, None, input_pos]
+
+        if self.n_rep > 1:
+            k = k.repeat_interleave(self.n_rep, dim=1)
+            v = v.repeat_interleave(self.n_rep, dim=1)
+
+        y = torch.ops.coreml.sdpa(q, k, v, attn_mask)
+
+        return y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
+
+
+def replace_sdpa_with_coreml_sdpa(module: torch.nn.Module):
+    for name, child in module.named_children():
+        if isinstance(child, SDPA):
+            setattr(
+                module,
+                name,
+                SDPACoreML(child.kv_cache, child.dim, child.head_dim, child.n_rep),
+            )
+        else:
+            replace_sdpa_with_coreml_sdpa(child)
+    return module
+
+
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
     This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,

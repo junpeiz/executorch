@@ -56,6 +56,7 @@ from .source_transformation.sdpa import (
     replace_sdpa_with_custom_op,
     replace_sdpa_with_flex_sdpa,
     replace_sdpa_with_simple_sdpa,
+    replace_sdpa_with_coreml_sdpa,
 )
 
 IS_FBCODE = True  #  os.environ.get("FBCODE_PLATFORM", False)
@@ -414,7 +415,9 @@ def _prepare_for_llama_export(modelname: str, args) -> LLMEdgeManager:
 
     if args.coreml:
         if not args.coreml_torch_jit_trace_and_export:
-            transforms.append(replace_sdpa_with_simple_sdpa)
+            # TODO: Keep SDPA fat op for conversion.
+            # transforms.append(replace_sdpa_with_simple_sdpa)
+            transforms.append(replace_sdpa_with_coreml_sdpa)
             transforms.append(replace_causal_mask)
     return (
         _load_llama_model(
